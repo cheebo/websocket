@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"crypto/tls"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/jpillora/backoff"
@@ -16,12 +15,27 @@ import (
 )
 
 const (
-	NotConnected = "websocket not connected"
+	ErrNotConnected          = "websocket not connected"
+	ErrUrlEmpty              = "url can not be empty"
+	ErrUrlWrongScheme        = "websocket uri must start with ws or wss scheme"
+	ErrUrlNamePassNotAllowed = "user name and password are not allowed in websocket uri"
+	ErrCantConnect           = "websocket can't connect"
 )
 
-var ErrNotConnected = errors.New(NotConnected)
+type WsOpts func(dl *websocket.Dialer)
 
 type Websocket struct {
+	// Websocket ID
+	Id uint64
+	// Websocket Meta
+	Meta map[string]interface{}
+
+	Logger *logrus.Logger
+
+	Errors chan<- error
+
+	Reconnect bool
+
 	// default to 2 seconds
 	ReconnectIntervalMin time.Duration
 	// default to 30 seconds
@@ -34,10 +48,13 @@ type Websocket struct {
 	Verbose bool
 
 	// Cal function
-	OnConnect func(ws *Websocket)
-	OnError   func(ws *Websocket, err error)
+	OnConnect    func(ws *Websocket)
+	OnDisConnect func(ws *Websocket)
 
-	logger *logrus.Logger
+	OnConnectError    func(ws *Websocket, err error)
+	OnDisconnectError func(ws *Websocket, err error)
+	OnReadError       func(ws *Websocket, err error)
+	OnWriteError      func(ws *Websocket, err error)
 
 	dialer        *websocket.Dialer
 	url           string
@@ -46,16 +63,19 @@ type Websocket struct {
 	mu            sync.Mutex
 	dialErr       error
 	isConnected   bool
+	isClosed      bool
 
 	*websocket.Conn
 }
 
 func (ws *Websocket) WriteJSON(v interface{}) error {
-	err := ErrNotConnected
+	err := errors.New(ErrNotConnected)
 	if ws.IsConnected() {
 		err = ws.Conn.WriteJSON(v)
 		if err != nil {
-			ws.OnError(ws, err)
+			if ws.OnWriteError != nil {
+				ws.OnWriteError(ws, err)
+			}
 			ws.closeAndReconnect()
 		}
 	}
@@ -64,11 +84,13 @@ func (ws *Websocket) WriteJSON(v interface{}) error {
 }
 
 func (ws *Websocket) WriteMessage(messageType int, data []byte) error {
-	err := ErrNotConnected
+	err := errors.New(ErrNotConnected)
 	if ws.IsConnected() {
 		err = ws.Conn.WriteMessage(messageType, data)
 		if err != nil {
-			ws.OnError(ws, err)
+			if ws.OnWriteError != nil {
+				ws.OnWriteError(ws, err)
+			}
 			ws.closeAndReconnect()
 		}
 	}
@@ -77,11 +99,13 @@ func (ws *Websocket) WriteMessage(messageType int, data []byte) error {
 }
 
 func (ws *Websocket) ReadMessage() (messageType int, message []byte, err error) {
-	err = ErrNotConnected
+	err = errors.New(ErrNotConnected)
 	if ws.IsConnected() {
 		messageType, message, err = ws.Conn.ReadMessage()
 		if err != nil {
-			ws.OnError(ws, err)
+			if ws.OnReadError != nil {
+				ws.OnReadError(ws, err)
+			}
 			ws.closeAndReconnect()
 		}
 	}
@@ -92,8 +116,15 @@ func (ws *Websocket) ReadMessage() (messageType int, message []byte, err error) 
 func (ws *Websocket) Close() {
 	ws.mu.Lock()
 	if ws.Conn != nil {
-		ws.Conn.Close()
+		err := ws.Conn.Close()
+		if err == nil && ws.isConnected && ws.OnDisConnect != nil {
+			ws.OnDisConnect(ws)
+		}
+		if err != nil && ws.OnDisconnectError != nil {
+			ws.OnDisconnectError(ws, err)
+		}
 	}
+	ws.isClosed = true
 	ws.isConnected = false
 	ws.mu.Unlock()
 }
@@ -103,44 +134,30 @@ func (ws *Websocket) closeAndReconnect() {
 	ws.connect()
 }
 
-func (ws *Websocket) Dial(urlStr string, reqHeader http.Header) {
-	if ws.logger == nil {
-		ws.logger = logrus.New()
-	}
-	if urlStr == "" {
-		ws.logger.Fatal("Dial: Url cannot be empty")
-	}
-	u, err := url.Parse(urlStr)
-
+func (ws *Websocket) Dial(urlStr string, reqHeader http.Header, opts ...WsOpts) error {
+	_, err := parseUrl(urlStr)
 	if err != nil {
-		ws.logger.Fatal("Url:", err)
-	}
-
-	if u.Scheme != "ws" && u.Scheme != "wss" {
-		ws.logger.Fatal("Url: websocket URIs must start with ws or wss scheme")
-	}
-
-	if u.User != nil {
-		ws.logger.Fatal("Url: user name and password are not allowed in websocket URIs")
+		return err
 	}
 
 	ws.url = urlStr
-
+	ws.isClosed = false
 	ws.setDefaults()
 
-	// todo: add option function to configure dialer
 	ws.dialer = &websocket.Dialer{
-		Proxy: http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: ws.HandshakeTimeout,
 	}
-	ws.dialer.HandshakeTimeout = ws.HandshakeTimeout
+	for _, opt := range opts {
+		opt(ws.dialer)
+	}
 
 	go ws.connect()
 
 	// wait on first attempt
 	time.Sleep(ws.HandshakeTimeout)
+
+	return nil
 }
 
 func (ws *Websocket) connect() {
@@ -155,6 +172,11 @@ func (ws *Websocket) connect() {
 	rand.Seed(time.Now().UTC().UnixNano())
 
 	for {
+		if ws.isClosed {
+			ws.mu.Unlock()
+			break
+		}
+
 		nextInterval := b.Duration()
 
 		wsConn, httpResp, err := ws.dialer.Dial(ws.url, ws.requestHeader)
@@ -164,17 +186,20 @@ func (ws *Websocket) connect() {
 		ws.dialErr = err
 		ws.isConnected = err == nil
 		ws.httpResponse = httpResp
+
 		ws.mu.Unlock()
 
 		if err == nil {
-			if ws.Verbose {
-				ws.logger.Info(fmt.Sprintf("Dial: connection was successfully established with %s\n", ws.url))
+			if ws.Logger != nil {
+				ws.Logger.Info(fmt.Sprintf("Websocket[%d].Dial: connection was successfully established with %s\n", ws.Id, ws.url))
 			}
 			break
 		} else {
 			if ws.Verbose {
-				ws.logger.Error(err)
-				ws.logger.Info(fmt.Sprintf("Dial: can't connect to %s, will try again in %d\n", ws.url, nextInterval))
+				ws.Logger.Error(fmt.Sprintf("Websocket[%d].Dial: can't connect to %s, will try again in %v\n", ws.Id, ws.url, nextInterval))
+			}
+			if ws.OnConnectError != nil {
+				ws.OnConnectError(ws, err)
 			}
 		}
 
@@ -223,4 +248,25 @@ func (ws *Websocket) setDefaults() {
 	if ws.HandshakeTimeout == 0 {
 		ws.HandshakeTimeout = 2 * time.Second
 	}
+}
+
+func parseUrl(urlStr string) (*url.URL, error) {
+	if urlStr == "" {
+		return nil, errors.New(ErrUrlEmpty)
+	}
+	u, err := url.Parse(urlStr)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if u.Scheme != "ws" && u.Scheme != "wss" {
+		return nil, errors.New(ErrUrlWrongScheme)
+	}
+
+	if u.User != nil {
+		return nil, errors.New(ErrUrlNamePassNotAllowed)
+	}
+
+	return u, nil
 }

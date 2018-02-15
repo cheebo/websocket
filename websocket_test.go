@@ -1,1 +1,1 @@
-package websocket
+package websocket_test

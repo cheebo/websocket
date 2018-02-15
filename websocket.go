@@ -14,12 +14,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	ErrNotConnected          = "websocket not connected"
-	ErrUrlEmpty              = "url can not be empty"
-	ErrUrlWrongScheme        = "websocket uri must start with ws or wss scheme"
-	ErrUrlNamePassNotAllowed = "user name and password are not allowed in websocket uri"
-	ErrCantConnect           = "websocket can't connect"
+var (
+	ErrNotConnected          = errors.New("websocket not connected")
+	ErrUrlEmpty              = errors.New("url can not be empty")
+	ErrUrlWrongScheme        = errors.New("websocket uri must start with ws or wss scheme")
+	ErrUrlNamePassNotAllowed = errors.New("user name and password are not allowed in websocket uri")
+	ErrCantConnect           = errors.New("websocket can't connect")
 )
 
 type WsOpts func(dl *websocket.Dialer)
@@ -69,7 +69,7 @@ type Websocket struct {
 }
 
 func (ws *Websocket) WriteJSON(v interface{}) error {
-	err := errors.New(ErrNotConnected)
+	err := ErrNotConnected
 	if ws.IsConnected() {
 		err = ws.Conn.WriteJSON(v)
 		if err != nil {
@@ -84,7 +84,7 @@ func (ws *Websocket) WriteJSON(v interface{}) error {
 }
 
 func (ws *Websocket) WriteMessage(messageType int, data []byte) error {
-	err := errors.New(ErrNotConnected)
+	err := ErrNotConnected
 	if ws.IsConnected() {
 		err = ws.Conn.WriteMessage(messageType, data)
 		if err != nil {
@@ -99,7 +99,7 @@ func (ws *Websocket) WriteMessage(messageType int, data []byte) error {
 }
 
 func (ws *Websocket) ReadMessage() (messageType int, message []byte, err error) {
-	err = errors.New(ErrNotConnected)
+	err = ErrNotConnected
 	if ws.IsConnected() {
 		messageType, message, err = ws.Conn.ReadMessage()
 		if err != nil {
@@ -252,7 +252,7 @@ func (ws *Websocket) setDefaults() {
 
 func parseUrl(urlStr string) (*url.URL, error) {
 	if urlStr == "" {
-		return nil, errors.New(ErrUrlEmpty)
+		return nil, ErrUrlEmpty
 	}
 	u, err := url.Parse(urlStr)
 
@@ -261,11 +261,11 @@ func parseUrl(urlStr string) (*url.URL, error) {
 	}
 
 	if u.Scheme != "ws" && u.Scheme != "wss" {
-		return nil, errors.New(ErrUrlWrongScheme)
+		return nil, ErrUrlWrongScheme
 	}
 
 	if u.User != nil {
-		return nil, errors.New(ErrUrlNamePassNotAllowed)
+		return nil, ErrUrlNamePassNotAllowed
 	}
 
 	return u, nil

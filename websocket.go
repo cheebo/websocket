@@ -172,10 +172,12 @@ func (ws *Websocket) connect() {
 	rand.Seed(time.Now().UTC().UnixNano())
 
 	for {
+		ws.mu.Lock()
 		if ws.isClosed {
 			ws.mu.Unlock()
-			break
+			return
 		}
+		ws.mu.Unlock()
 
 		nextInterval := b.Duration()
 
@@ -186,16 +188,18 @@ func (ws *Websocket) connect() {
 		ws.dialErr = err
 		ws.isConnected = err == nil
 		ws.httpResponse = httpResp
-
 		ws.mu.Unlock()
 
 		if err == nil {
-			if ws.Logger != nil {
+			if ws.Verbose && ws.Logger != nil {
 				ws.Logger.Info(fmt.Sprintf("Websocket[%d].Dial: connection was successfully established with %s\n", ws.Id, ws.url))
 			}
-			break
+			if ws.OnConnect != nil {
+				ws.OnConnect(ws)
+			}
+			return
 		} else {
-			if ws.Verbose {
+			if ws.Verbose && ws.Logger != nil {
 				ws.Logger.Error(fmt.Sprintf("Websocket[%d].Dial: can't connect to %s, will try again in %v\n", ws.Id, ws.url, nextInterval))
 			}
 			if ws.OnConnectError != nil {
@@ -204,10 +208,6 @@ func (ws *Websocket) connect() {
 		}
 
 		time.Sleep(nextInterval)
-	}
-
-	if ws.OnConnect != nil {
-		ws.OnConnect(ws)
 	}
 }
 

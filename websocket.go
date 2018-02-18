@@ -152,10 +152,11 @@ func (ws *Websocket) Dial(urlStr string, reqHeader http.Header, opts ...WsOpts) 
 		opt(ws.dialer)
 	}
 
+	hs := ws.HandshakeTimeout
 	go ws.connect()
 
 	// wait on first attempt
-	time.Sleep(ws.HandshakeTimeout)
+	time.Sleep(hs)
 
 	return nil
 }
@@ -174,6 +175,7 @@ func (ws *Websocket) connect() {
 	for {
 		ws.mu.Lock()
 		if ws.isClosed {
+			ws.isClosed = false
 			ws.mu.Unlock()
 			return
 		}

@@ -131,7 +131,7 @@ func (ws *Websocket) Close() {
 
 func (ws *Websocket) closeAndReconnect() {
 	ws.Close()
-	ws.connect()
+	ws.Connect()
 }
 
 func (ws *Websocket) Dial(urlStr string, reqHeader http.Header, opts ...WsOpts) error {
@@ -153,7 +153,7 @@ func (ws *Websocket) Dial(urlStr string, reqHeader http.Header, opts ...WsOpts) 
 	}
 
 	hs := ws.HandshakeTimeout
-	go ws.connect()
+	go ws.Connect()
 
 	// wait on first attempt
 	time.Sleep(hs)
@@ -161,7 +161,7 @@ func (ws *Websocket) Dial(urlStr string, reqHeader http.Header, opts ...WsOpts) 
 	return nil
 }
 
-func (ws *Websocket) connect() {
+func (ws *Websocket) Connect() {
 	b := &backoff.Backoff{
 		Min:    ws.ReconnectIntervalMin,
 		Max:    ws.ReconnectIntervalMax,

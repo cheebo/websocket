@@ -49,7 +49,7 @@ type Websocket struct {
 
 	// Cal function
 	OnConnect    func(ws *Websocket)
-	OnDisConnect func(ws *Websocket)
+	OnDisconnect func(ws *Websocket)
 
 	OnConnectError    func(ws *Websocket, err error)
 	OnDisconnectError func(ws *Websocket, err error)
@@ -117,8 +117,8 @@ func (ws *Websocket) Close() {
 	ws.mu.Lock()
 	if ws.Conn != nil {
 		err := ws.Conn.Close()
-		if err == nil && ws.isConnected && ws.OnDisConnect != nil {
-			ws.OnDisConnect(ws)
+		if err == nil && ws.isConnected && ws.OnDisconnect != nil {
+			ws.OnDisconnect(ws)
 		}
 		if err != nil && ws.OnDisconnectError != nil {
 			ws.OnDisconnectError(ws, err)
